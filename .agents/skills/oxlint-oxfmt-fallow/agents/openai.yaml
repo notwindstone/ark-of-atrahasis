@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ark Tooling Audit"
+  short_description: "Run Ark lint and Fallow checks safely"
+  default_prompt: "Use $oxlint-oxfmt-fallow to audit Ark tooling findings and validate the project gate."

@@ -1,8 +1,9 @@
 {
   "name": "ark-of-atrahasis",
-  "version": "0.3.1",
-  "description": "Safe DOM wrapper made for the usage in Secure ECMAScript compartments",
+  "version": "1.0.0",
+  "description": "Capability-oriented DOM wrapper for Secure ECMAScript integrations",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,11 +14,42 @@
     }
   },
   "files": [
-    "dist"
+    ".github/workflows/check.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/security.yml",
+    ".fallowrc.json",
+    ".node-version",
+    "CHANGELOG.md",
+    "dist",
+    "npm-shrinkwrap.json",
+    "playwright.config.mjs",
+    "scripts",
+    "src",
+    "test",
+    "tsconfig.json",
+    "tsconfig.tooling.json",
+    "tsdown.config.ts",
+    "RELEASING.md"
   ],
   "scripts": {
-    "build": "tsup",
-    "prepublishOnly": "tsup"
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit -p tsconfig.json && node node_modules/typescript-current/bin/tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tooling.json && node node_modules/typescript-current/bin/tsc --noEmit -p tsconfig.tooling.json && tsc --noEmit -p test/property/tsconfig.json && node node_modules/typescript-current/bin/tsc --noEmit -p test/property/tsconfig.json",
+    "lint": "biome lint src test scripts tsdown.config.ts playwright.config.mjs",
+    "test:unit": "vitest run --exclude test/release.test.mjs --exclude='test/browser/**'",
+    "test:property": "vitest run test/property",
+    "test:api": "npm run build && node --test test/api.node.mjs",
+    "test:release": "node --throw-deprecation --test test/release.test.mjs",
+    "test:browser": "npm run build && node node_modules/@playwright/test/cli.js test test/browser",
+    "test:ses": "npm run build && node --test test/ses.node.mjs",
+    "test": "npm run test:unit && npm run test:api && npm run test:release",
+    "test:package": "node --throw-deprecation scripts/test-package.mjs",
+    "pack:verified": "node --throw-deprecation scripts/test-package.mjs --output .artifacts",
+    "audit": "npm audit --audit-level=low",
+    "audit:signatures": "npm audit signatures",
+    "analyze": "node scripts/fallow-report.mjs",
+    "check": "npm run lint && npm run typecheck && npm run analyze && npm test && npm run test:browser && npm run test:ses && npm run audit && npm run test:package",
+    "prepack": "npm run build",
+    "prepublishOnly": "node scripts/reject-direct-publish.mjs"
   },
   "keywords": [
     "sandbox",
@@ -33,11 +65,42 @@
     "ark-of-atrahasis"
   ],
   "license": "GPL-3.0-only",
-  "devDependencies": {
-    "@types/bun": "latest",
-    "tsup": "^8.0.0"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/notwindstone/ark-of-atrahasis.git"
   },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
+  "homepage": "https://github.com/notwindstone/ark-of-atrahasis#readme",
+  "bugs": {
+    "url": "https://github.com/notwindstone/ark-of-atrahasis/issues"
+  },
+  "engines": {
+    "node": ">=26.5.0"
+  },
+  "packageManager": "npm@11.18.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.4",
+    "@cyclonedx/cyclonedx-library": "10.1.0",
+    "@endo/eventual-send": "1.5.0",
+    "@endo/pass-style": "1.8.1",
+    "@playwright/test": "1.61.1",
+    "@types/jsdom": "28.0.3",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "fallow": "3.6.0",
+    "fast-check": "4.9.0",
+    "jsdom": "29.1.1",
+    "ses": "2.2.0",
+    "smtp-address-parser": "1.1.0",
+    "tsdown": "0.22.8",
+    "typescript": "6.0.3",
+    "typescript-current": "npm:typescript@7.0.2",
+    "typescript-min": "npm:typescript@5.0.4",
+    "vitest": "4.1.10",
+    "yaml": "2.9.0"
   }
 }

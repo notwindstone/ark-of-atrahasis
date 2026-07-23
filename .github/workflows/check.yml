@@ -1,0 +1,67 @@
+name: check
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.action != 'edited'
+      || github.event.changes.base.ref.from != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js without a package-manager cache
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Install the pinned npm CLI without replacing the runner npm
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-cli"
+          npm install --prefix "$RUNNER_TEMP/npm-cli" npm@11.18.0 \
+            --ignore-scripts --no-audit --no-fund --no-package-lock
+          echo "NPM_CLI=$RUNNER_TEMP/npm-cli/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/npm-cli/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain versions
+        run: |
+          test "$(node --version)" = "v$(tr -d '\r\n' < .node-version)"
+          test "$(node "$NPM_CLI" --version)" = "11.18.0"
+
+      - name: Install frozen dependencies
+        run: node "$NPM_CLI" ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install pinned Playwright browsers
+        run: node node_modules/@playwright/test/cli.js install --with-deps chromium firefox webkit
+
+      - name: Run the complete gate
+        env:
+          NODE_OPTIONS: --throw-deprecation
+        run: node "$NPM_CLI" run check
+
+      - name: Verify registry signatures and attestations
+        if: github.event_name == 'push'
+        run: node "$NPM_CLI" run audit:signatures

@@ -1,0 +1,69 @@
+{
+  "$schema": "./node_modules/fallow/schema.json",
+  "entry": [
+    "src/index.ts",
+    "scripts/fallow-report.mjs",
+    "scripts/reject-direct-publish.mjs",
+    "scripts/release-recovery.mjs",
+    "scripts/test-package.mjs",
+    "scripts/verify-release.mjs",
+    "test/**/*.test.ts",
+    "test/**/*.test.mjs",
+    "test/browser/*.spec.mjs",
+    "test/browser/server.mjs",
+    "test/api.node.mjs",
+    "test/ses.node.mjs",
+    "test/types/*.ts",
+    "playwright.config.mjs",
+    "tsdown.config.ts"
+  ],
+  "ignoreDependencies": [
+    "@cyclonedx/cyclonedx-library",
+    "ajv",
+    "ajv-formats",
+    "smtp-address-parser",
+    "typescript-current",
+    "typescript-min"
+  ],
+  "includeEntryExports": true,
+  "ignoreExports": [
+    {
+      "file": "playwright.config.mjs",
+      "exports": ["default"]
+    },
+    {
+      "file": "tsdown.config.ts",
+      "exports": ["default"]
+    }
+  ],
+  "rules": {
+    "unused-files": "error",
+    "unused-exports": "error",
+    "unused-types": "error",
+    "private-type-leaks": "warn",
+    "unused-dependencies": "error",
+    "unused-dev-dependencies": "warn",
+    "unused-optional-dependencies": "warn",
+    "dev-dependencies-in-production": "error",
+    "unused-class-members": "error",
+    "unused-enum-members": "error",
+    "unresolved-imports": "error",
+    "unlisted-dependencies": "error",
+    "duplicate-exports": "error",
+    "circular-dependencies": "error",
+    "re-export-cycle": "warn",
+    "type-only-dependencies": "warn",
+    "test-only-dependencies": "warn",
+    "stale-suppressions": "warn",
+    "require-suppression-reason": "warn"
+  },
+  "duplicates": {
+    "mode": "mild",
+    "minTokens": 50,
+    "minLines": 5,
+    "minOccurrences": 2,
+    "threshold": 0,
+    "ignoreDefaults": true,
+    "ignoreImports": true
+  }
+}

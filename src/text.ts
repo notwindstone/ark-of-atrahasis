@@ -1,20 +1,28 @@
 import type { SafeTextNode } from "./types.ts";
-import { registerPair, unregisterPair } from "./registry.ts";
+import type { DocumentContext } from "./context.ts";
+import { requireString } from "./attribute-contract.ts";
 
-export function createSafeTextNode(realText: Text): SafeTextNode {
+export function createSafeTextNode(context: DocumentContext, realText: Text): SafeTextNode {
+  const known = context.registry.getWrapper<SafeTextNode>(realText);
+  if (known) return known;
+
   const wrapper: SafeTextNode = {
     setText(value: string): void {
-      realText.textContent = String(value ?? "");
+      const text = requireString(value, "SafeTextNode.setText.value");
+      context.setText(realText, "data", text, () => {
+        context.platform.setTextContent(realText, text);
+      });
     },
     getText(): string {
-      return realText.textContent ?? "";
+      return context.nodeOperation(
+        realText,
+        () => context.platform.getTextContent(realText) ?? "",
+      );
     },
-    remove(): void {
-      realText.remove();
-      unregisterPair(wrapper, realText);
-    },
+    detach(): void { context.detachNode(realText); },
+    remove(): void { context.detachNode(realText); },
+    dispose(): void { context.disposeNode(realText); },
   };
 
-  registerPair(wrapper, realText);
-  return wrapper;
+  return context.complete(wrapper, realText);
 }

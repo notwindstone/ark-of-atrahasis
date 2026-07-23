@@ -1,0 +1,80 @@
+name: security
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    if: >-
+      github.event_name == 'pull_request'
+      && (github.event.action != 'edited'
+      || github.event.changes.base.ref.from != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+          fail-on-scopes: "runtime, development, unknown"
+          license-check: false
+          show-patched-versions: true
+          vulnerability-check: true
+
+  registry-audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the audited commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Install the pinned npm CLI without replacing the runner npm
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-cli"
+          npm install --prefix "$RUNNER_TEMP/npm-cli" npm@11.18.0 \
+            --ignore-scripts --no-audit --no-fund --no-package-lock
+          echo "NPM_CLI=$RUNNER_TEMP/npm-cli/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/npm-cli/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain versions
+        run: |
+          test "$(node --version)" = "v$(tr -d '\r\n' < .node-version)"
+          test "$(node "$NPM_CLI" --version)" = "11.18.0"
+
+      - name: Install frozen dependencies
+        run: node "$NPM_CLI" ci --ignore-scripts --no-audit --no-fund
+
+      - name: Reject known vulnerabilities
+        run: node "$NPM_CLI" audit --audit-level=low
+
+      - name: Verify registry signatures and attestations
+        run: node "$NPM_CLI" run audit:signatures

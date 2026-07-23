@@ -1,0 +1,7 @@
+# Release and supply-chain controls require review by the canonical maintainer.
+/.github/ @notwindstone
+/package.json @notwindstone
+/npm-shrinkwrap.json @notwindstone
+/scripts/ @notwindstone
+/RELEASING.md @notwindstone
+/CHANGELOG.md @notwindstone

@@ -1,94 +1,195 @@
 import type { SafeStyle } from "./types.ts";
-import { hasCssUrl } from "./validation.ts";
+import type { DocumentContext, StyleMutationResult } from "./context.ts";
+import { canonicalizeStyleProperty } from "./style-policy.ts";
+import { scanCSSNetworkRisk } from "./validation.ts";
+import { requireString } from "./attribute-contract.ts";
+import {
+  getOwnPlatformFunction,
+  getRealmConstructorPrototype,
+} from "./realm-reflection.ts";
 
-const ALLOWED_STYLE_PROPERTIES = new Set([
-  "color", "opacity",
-  "background-color", "backgroundColor",
-  "font-size", "fontSize", "font-weight", "fontWeight",
-  "font-style", "fontStyle", "font-family", "fontFamily",
-  "font-variant", "fontVariant",
-  "text-align", "textAlign", "text-decoration", "textDecoration",
-  "text-transform", "textTransform", "text-indent", "textIndent",
-  "text-overflow", "textOverflow",
-  "letter-spacing", "letterSpacing", "word-spacing", "wordSpacing",
-  "line-height", "lineHeight", "white-space", "whiteSpace",
-  "vertical-align", "verticalAlign",
-  "margin-top", "marginTop", "margin-right", "marginRight",
-  "margin-bottom", "marginBottom", "margin-left", "marginLeft",
-  "padding-top", "paddingTop", "padding-right", "paddingRight",
-  "padding-bottom", "paddingBottom", "padding-left", "paddingLeft",
-  "border-width", "borderWidth",
-  "border-top-width", "borderTopWidth", "border-right-width", "borderRightWidth",
-  "border-bottom-width", "borderBottomWidth", "border-left-width", "borderLeftWidth",
-  "border-color", "borderColor",
-  "border-top-color", "borderTopColor", "border-right-color", "borderRightColor",
-  "border-bottom-color", "borderBottomColor", "border-left-color", "borderLeftColor",
-  "border-style", "borderStyle",
-  "border-top-style", "borderTopStyle", "border-right-style", "borderRightStyle",
-  "border-bottom-style", "borderBottomStyle", "border-left-style", "borderLeftStyle",
-  "border-radius", "borderRadius",
-  "border-top-left-radius", "borderTopLeftRadius",
-  "border-top-right-radius", "borderTopRightRadius",
-  "border-bottom-left-radius", "borderBottomLeftRadius",
-  "border-bottom-right-radius", "borderBottomRightRadius",
-  "width", "min-width", "minWidth", "max-width", "maxWidth",
-  "height", "min-height", "minHeight", "max-height", "maxHeight",
-  "display", "visibility",
-  "overflow", "overflow-x", "overflowX", "overflow-y", "overflowY",
-  "position", "top", "right", "bottom", "left",
-  "z-index", "zIndex",
-  "flex-direction", "flexDirection", "flex-wrap", "flexWrap",
-  "flex-grow", "flexGrow", "flex-shrink", "flexShrink", "flex-basis", "flexBasis",
-  "align-items", "alignItems", "align-self", "alignSelf",
-  "justify-content", "justifyContent", "justify-self", "justifySelf",
-  "gap", "row-gap", "rowGap", "column-gap", "columnGap",
-  "grid-template-columns", "gridTemplateColumns",
-  "grid-template-rows", "gridTemplateRows",
-  "grid-column", "gridColumn", "grid-row", "gridRow",
-  "order",
-  "box-shadow", "boxShadow",
-  "outline-color", "outlineColor", "outline-style", "outlineStyle",
-  "outline-width", "outlineWidth", "outline-offset", "outlineOffset",
-  "transform", "transition",
-  "animation-name", "animationName", "animation-duration", "animationDuration",
-  "animation-timing-function", "animationTimingFunction",
-  "animation-delay", "animationDelay", "animation-iteration-count", "animationIterationCount",
-  "animation-direction", "animationDirection", "animation-fill-mode", "animationFillMode",
-  "user-select", "userSelect", "pointer-events", "pointerEvents",
-  "resize", "appearance",
-  "object-fit", "objectFit", "object-position", "objectPosition",
-  "aspect-ratio", "aspectRatio",
-  "word-break", "wordBreak", "overflow-wrap", "overflowWrap", "hyphens",
-  "accent-color", "accentColor", "caret-color", "caretColor",
-  "column-count", "columnCount",
-  "scroll-behavior", "scrollBehavior",
-  "scroll-margin-top", "scrollMarginTop", "scroll-margin-bottom", "scrollMarginBottom",
-  "scroll-padding-top", "scrollPaddingTop", "scroll-padding-bottom", "scrollPaddingBottom",
-  "touch-action", "touchAction",
-  "will-change", "willChange",
-  "isolation",
-  "mix-blend-mode", "mixBlendMode",
-  "clip-path", "clipPath",
-  "contain", "container-type", "containerType",
-  "cursor",
-]);
+interface StyleState {
+  readonly value: string;
+  readonly priority: string;
+  readonly attributeValue: string | null;
+}
 
-export function createSafeStyle(realEl: HTMLElement): SafeStyle {
-  return new Proxy(Object.create(null) as SafeStyle, {
-    get(_, prop) {
-      if (typeof prop !== "string") return undefined;
-      if (!ALLOWED_STYLE_PROPERTIES.has(prop)) return undefined;
-      return realEl.style[prop as keyof CSSStyleDeclaration];
-    },
-    set(_, prop, value) {
-      if (typeof prop !== "string") return false;
-      if (!ALLOWED_STYLE_PROPERTIES.has(prop)) return false;
+const apply = Reflect.apply;
 
-      const stringValue = String(value ?? "");
-      if (hasCssUrl(stringValue)) return false;
+/**
+ * An explicit, reflection-coherent style facade. It never exposes cssText,
+ * indexed CSSOM members, arbitrary property assignment, or a Proxy surface.
+ */
+export function createSafeStyle(
+  context: DocumentContext,
+  realEl: HTMLElement,
+): SafeStyle {
+  const { stylePolicy: policy } = context;
+  const realm: unknown = context.ownerRealm;
 
-      (realEl.style as unknown as Record<string, string>)[prop] = stringValue;
-      return true;
-    },
-  });
+  const htmlElementPrototype = getRealmConstructorPrototype(realm, "HTMLElement");
+  const declarationPrototype = getRealmConstructorPrototype(realm, "CSSStyleDeclaration");
+  const styleGetter = getOwnPlatformFunction(htmlElementPrototype, "style", "getter");
+  const getPropertyValue = getOwnPlatformFunction(
+    declarationPrototype,
+    "getPropertyValue",
+    "method",
+  );
+  const getPropertyPriority = getOwnPlatformFunction(
+    declarationPrototype,
+    "getPropertyPriority",
+    "method",
+  );
+  const setProperty = getOwnPlatformFunction(declarationPrototype, "setProperty", "method");
+  const removeProperty = getOwnPlatformFunction(declarationPrototype, "removeProperty", "method");
+
+  let declaration: unknown;
+  if (styleGetter !== undefined) {
+    try {
+      declaration = apply(styleGetter, realEl, []);
+    } catch {
+      declaration = undefined;
+    }
+  }
+
+  const readCanonicalState = (property: string): StyleState | undefined => {
+    if (declaration === undefined || getPropertyValue === undefined) return undefined;
+    try {
+      const value = apply(getPropertyValue, declaration, [property]);
+      if (typeof value !== "string") return undefined;
+      let priority = "";
+      if (getPropertyPriority !== undefined) {
+        const result = apply(getPropertyPriority, declaration, [property]);
+        if (typeof result !== "string") return undefined;
+        priority = result;
+      }
+      return { value, priority, attributeValue: context.platform.getAttribute(realEl, "style") };
+    } catch {
+      return undefined;
+    }
+  };
+
+  const readCanonical = (property: string): string | undefined => {
+    return readCanonicalState(property)?.value;
+  };
+
+  const mutate = (
+    property: string,
+    action: () => void,
+    committed: (state: StyleState) => boolean,
+  ): StyleMutationResult => {
+    if (declaration === undefined || setProperty === undefined || removeProperty === undefined) {
+      return { status: "rejected", rollbackProven: true };
+    }
+    const previous = readCanonicalState(property);
+    if (previous === undefined) return { status: "rejected", rollbackProven: true };
+
+    const restorePrevious = (): boolean => {
+      const current = readCanonicalState(property);
+      if (
+        current === undefined
+        || current.value !== previous.value
+        || current.priority !== previous.priority
+      ) {
+        try {
+          if (previous.value.length > 0) {
+            apply(setProperty, declaration, [property, previous.value, previous.priority]);
+          } else {
+            apply(removeProperty, declaration, [property]);
+          }
+        } catch {
+          // Readback below decides whether a throwing restoration took effect.
+        }
+      }
+      if (previous.attributeValue === null) {
+        try {
+          if (context.platform.getAttribute(realEl, "style") === "") {
+            context.platform.removeAttribute(realEl, "style");
+          }
+        } catch {
+          // Readback below keeps an empty wrapper-created attribute unproven.
+        }
+      }
+      const observed = readCanonicalState(property);
+      if (
+        observed === undefined
+        || observed.value !== previous.value
+        || observed.priority !== previous.priority
+      ) {
+        return false;
+      }
+      return previous.attributeValue !== null || observed.attributeValue !== "";
+    };
+
+    let mutationThrew = false;
+    try {
+      action();
+    } catch {
+      mutationThrew = true;
+    }
+    const next = readCanonicalState(property);
+    if (!mutationThrew && next !== undefined && committed(next)) return { status: "committed" };
+
+    const rollbackProven = restorePrevious();
+    if (rollbackProven) return { status: "rejected", rollbackProven: true };
+    return {
+      status: "rejected",
+      rollbackProven: false,
+      retryRollback: restorePrevious,
+    };
+  };
+
+  const get = (property: string): string | undefined => {
+    const primitiveProperty = requireString(property, "SafeStyle.get.property");
+    return context.nodeOperation(realEl, () => {
+      const canonical = canonicalizeStyleProperty(primitiveProperty);
+      if (canonical === undefined || !policy.allows(canonical)) return undefined;
+      return readCanonical(canonical);
+    });
+  };
+
+  const set = (property: string, value: string): boolean => {
+    const primitiveProperty = requireString(property, "SafeStyle.set.property");
+    const primitiveValue = requireString(value, "SafeStyle.set.value");
+    const canonical = canonicalizeStyleProperty(primitiveProperty);
+    if (
+      canonical === undefined ||
+      !policy.allows(canonical) ||
+      primitiveValue.length === 0 ||
+      scanCSSNetworkRisk(primitiveValue).risky ||
+      declaration === undefined ||
+      getPropertyValue === undefined ||
+      setProperty === undefined ||
+      removeProperty === undefined
+    ) {
+      return context.nodeOperation(realEl, () => false);
+    }
+
+    return context.setStyle(realEl, () => {
+      return mutate(canonical, () => {
+        apply(setProperty, declaration, [canonical, primitiveValue, ""]);
+      }, (state) => state.value.length > 0);
+    });
+  };
+
+  const remove = (property: string): boolean => {
+    const primitiveProperty = requireString(property, "SafeStyle.remove.property");
+    const canonical = canonicalizeStyleProperty(primitiveProperty);
+    if (
+      canonical === undefined ||
+      !policy.allows(canonical) ||
+      declaration === undefined ||
+      setProperty === undefined ||
+      removeProperty === undefined
+    ) {
+      return context.nodeOperation(realEl, () => false);
+    }
+    return context.setStyle(realEl, () => {
+      return mutate(canonical, () => {
+        apply(removeProperty, declaration, [canonical]);
+      }, (state) => state.value.length === 0);
+    });
+  };
+
+  return { get, set, remove };
 }

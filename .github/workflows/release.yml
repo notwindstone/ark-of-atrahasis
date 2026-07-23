@@ -1,0 +1,241 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      node-version: ${{ steps.toolchain.outputs.node-version }}
+    steps:
+      - name: Check out the annotated release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js without a package-manager cache
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Install the pinned npm CLI without replacing the runner npm
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-cli"
+          npm install --prefix "$RUNNER_TEMP/npm-cli" npm@11.18.0 \
+            --ignore-scripts --no-audit --no-fund --no-package-lock
+          echo "NPM_CLI=$RUNNER_TEMP/npm-cli/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/npm-cli/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain versions
+        id: toolchain
+        run: |
+          required_node_version="$(tr -d '\r\n' < .node-version)"
+          test "$(node --version)" = "v$required_node_version"
+          test "$(node "$NPM_CLI" --version)" = "11.18.0"
+          echo "node-version=$required_node_version" >> "$GITHUB_OUTPUT"
+
+      - name: Install frozen dependencies
+        run: node "$NPM_CLI" ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify release tag, metadata, and registry state
+        run: node scripts/verify-release.mjs "$GITHUB_REF_NAME"
+
+      - name: Install pinned Playwright browsers
+        run: node node_modules/@playwright/test/cli.js install --with-deps chromium firefox webkit
+
+      - name: Run the complete credential-free gate
+        env:
+          NODE_OPTIONS: --throw-deprecation
+        run: node "$NPM_CLI" run check
+
+      - name: Verify registry signatures and attestations
+        run: node "$NPM_CLI" run audit:signatures
+
+      - name: Create the already-tested release artifacts
+        env:
+          NODE_OPTIONS: --throw-deprecation
+        run: node "$NPM_CLI" run pack:verified
+
+      - name: Verify the exact artifact set
+        id: artifacts
+        shell: bash
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          artifact_base="ark-of-atrahasis-$version"
+          actual="$(find .artifacts -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          expected="$(printf '%s\n' \
+            "$artifact_base.sbom.cdx.json" \
+            "$artifact_base.sha256" \
+            "$artifact_base.tgz")"
+          test "$actual" = "$expected"
+          echo "artifact-base=$artifact_base" >> "$GITHUB_OUTPUT"
+
+      - name: Upload only the verified release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release-${{ github.sha }}
+          path: |
+            .artifacts/${{ steps.artifacts.outputs.artifact-base }}.tgz
+            .artifacts/${{ steps.artifacts.outputs.artifact-base }}.sbom.cdx.json
+            .artifacts/${{ steps.artifacts.outputs.artifact-base }}.sha256
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Set up Node.js without a package-manager cache
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ needs.verify.outputs.node-version }}
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+
+      - name: Install the pinned npm CLI without lifecycle scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-cli"
+          npm install --prefix "$RUNNER_TEMP/npm-cli" npm@11.18.0 \
+            --ignore-scripts --no-audit --no-fund --no-package-lock
+          echo "NPM_CLI=$RUNNER_TEMP/npm-cli/node_modules/npm/bin/npm-cli.js" >> "$GITHUB_ENV"
+
+      - name: Verify toolchain versions
+        run: |
+          test "$(node --version)" = "v${{ needs.verify.outputs.node-version }}"
+          test "$(node "$NPM_CLI" --version)" = "11.18.0"
+
+      - name: Download the verified release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-${{ github.sha }}
+          path: .artifacts
+
+      - name: Verify checksums and tarball identity
+        id: artifacts
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          artifact_base="ark-of-atrahasis-$version"
+          actual="$(find .artifacts -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          expected="$(printf '%s\n' \
+            "$artifact_base.sbom.cdx.json" \
+            "$artifact_base.sha256" \
+            "$artifact_base.tgz")"
+          test "$actual" = "$expected"
+          node --input-type=module - "$artifact_base" <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const artifactBase = process.argv[2];
+          const lines = readFileSync(`.artifacts/${artifactBase}.sha256`, "utf8")
+            .trimEnd()
+            .split("\n");
+          const expectedNames = [`${artifactBase}.tgz`, `${artifactBase}.sbom.cdx.json`];
+          if (lines.length !== expectedNames.length) throw new Error("checksum file must cover exactly two assets");
+          for (const [index, line] of lines.entries()) {
+            const match = /^([0-9a-f]{64})  (.+)$/u.exec(line);
+            if (!match || match[2] !== expectedNames[index]) {
+              throw new Error("checksum file contains an unexpected artifact entry");
+            }
+          }
+          NODE
+          (
+            cd .artifacts
+            sha256sum --check --strict "$artifact_base.sha256"
+          )
+          tar --extract --to-stdout --file ".artifacts/$artifact_base.tgz" \
+            package/package.json > "$RUNNER_TEMP/release-package.json"
+          node --input-type=module - "$RUNNER_TEMP/release-package.json" "$version" <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (manifest.name !== "ark-of-atrahasis" || manifest.version !== process.argv[3]) {
+            throw new Error("tarball identity does not match the release tag");
+          }
+          NODE
+          mkdir -p "$RUNNER_TEMP/release-scripts"
+          tar --extract --file ".artifacts/$artifact_base.tgz" \
+            --directory "$RUNNER_TEMP/release-scripts" \
+            --strip-components=2 \
+            package/scripts/release-recovery.mjs \
+            package/scripts/stable-version.mjs
+          test -f "$RUNNER_TEMP/release-scripts/release-recovery.mjs"
+          test -f "$RUNNER_TEMP/release-scripts/stable-version.mjs"
+          echo "RELEASE_RECOVERY_SCRIPT=$RUNNER_TEMP/release-scripts/release-recovery.mjs" >> "$GITHUB_ENV"
+          echo "artifact-base=$artifact_base" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the recoverable npm registry state before GitHub mutation
+        id: registry
+        env:
+          ARTIFACT_BASE: ${{ steps.artifacts.outputs.artifact-base }}
+        run: |
+          node "$RELEASE_RECOVERY_SCRIPT" inspect-registry \
+            ark-of-atrahasis \
+            "${GITHUB_REF_NAME#v}" \
+            "./.artifacts/$ARTIFACT_BASE.tgz"
+
+      - name: Create or verify the exact recoverable GitHub release
+        id: release
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ARTIFACT_BASE: ${{ steps.artifacts.outputs.artifact-base }}
+          REGISTRY_STATE: ${{ steps.registry.outputs.registry-state }}
+        with:
+          script: |
+            const { pathToFileURL } = require("node:url");
+            const recovery = await import(pathToFileURL(process.env.RELEASE_RECOVERY_SCRIPT).href);
+            await recovery.prepareGitHubRelease({
+              artifactBase: process.env.ARTIFACT_BASE,
+              commitSha: context.sha,
+              core,
+              github,
+              ...context.repo,
+              registryState: process.env.REGISTRY_STATE,
+              tag: process.env.GITHUB_REF_NAME,
+            });
+
+      - name: Publish once or verify the exact npm bytes and provenance
+        env:
+          ARTIFACT_BASE: ${{ steps.artifacts.outputs.artifact-base }}
+          RELEASE_STATE: ${{ steps.release.outputs.release-state }}
+        run: |
+          node "$RELEASE_RECOVERY_SCRIPT" publish-or-resume \
+            "$RELEASE_STATE" \
+            ark-of-atrahasis \
+            "${GITHUB_REF_NAME#v}" \
+            "./.artifacts/$ARTIFACT_BASE.tgz"
+
+      - name: Publish or verify the populated GitHub release
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ARTIFACT_BASE: ${{ steps.artifacts.outputs.artifact-base }}
+        with:
+          script: |
+            const { pathToFileURL } = require("node:url");
+            const recovery = await import(pathToFileURL(process.env.RELEASE_RECOVERY_SCRIPT).href);
+            await recovery.finalizeGitHubRelease({
+              artifactBase: process.env.ARTIFACT_BASE,
+              commitSha: context.sha,
+              github,
+              ...context.repo,
+              tag: process.env.GITHUB_REF_NAME,
+            });

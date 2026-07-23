@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["./**/*.ts", "../identifier-namespace.test.ts", "../support/**/*.ts"],
+  "exclude": ["../../dist", "../../node_modules"]
+}
