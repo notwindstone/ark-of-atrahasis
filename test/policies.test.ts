@@ -232,3 +232,40 @@ test("factory preflight recognizes mounted factories and matches text node error
     await expect(Promise.resolve().then(() => mount.createTextNode(value as never))).rejects.toEqual(record);
   }
 });
+
+test("CSS function names respect identifier boundaries and escaped delimiters", () => {
+  expect(v.scanCSSNetworkRisk(".a { --label: my-image(); }")).toBe(false);
+  expect(v.scanCSSNetworkRisk(String.raw`.a { --label: image\a0 (Sans); }`)).toBe(false);
+  for (const value of [String.raw`URL\(`, String.raw`url\28`, String.raw`\@import`, "éimage()"])
+    expect(v.validStyle("fontFamily", value)).toBe(true);
+  expect(v.validStyle("cursor", "my-var()")).toBe(true);
+  expect(v.validStyle("cursor", String.raw`var\a0 (--x)`)).toBe(true);
+  expect(v.validStyle("cursor", "var(--x)")).toBe(false);
+  for (const css of [String.raw`\75\72\6c(`, String.raw`\2d webkit-image-set(`, String.raw`@\69mport`,
+    "url/**/(", "prefix/**/image(", "prefix/**/url(x)", "<!--url(x)"]) {
+    expect(v.scanCSSNetworkRisk(css)).toBe(true);
+  }
+});
+
+test("table span bounds and scope follow the cell kind", () => {
+  const { domain, root } = fixture();
+  const doc = domain.mount(root());
+  const td = doc.createTd(), th = doc.createTh();
+  for (const cell of [td, th]) {
+    const element = getRealNode(domain, cell) as Element;
+    for (const n of [1, 1000]) {
+      cell.setColspan(n);
+      expect(element.getAttribute("colspan")).toBe(String(n));
+    }
+    for (const n of [0, 1001]) fails("INVALID_ARGUMENT", () => cell.setColspan(n));
+    for (const n of [0, 65534]) {
+      cell.setRowspan(n);
+      expect(element.getAttribute("rowspan")).toBe(String(n));
+    }
+    for (const n of [-1, 65535]) fails("INVALID_ARGUMENT", () => cell.setRowspan(n));
+  }
+  th.setScope("row");
+  expect((getRealNode(domain, th) as Element).getAttribute("scope")).toBe("row");
+  // @ts-expect-error Only header cells expose scope.
+  expect(td.setScope).toBeUndefined();
+});

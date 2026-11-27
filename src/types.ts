@@ -330,8 +330,11 @@ export interface SafeCanvasElement extends SafeContainerElement {
 export interface SafeTableCellElement extends SafeContainerElement {
   setColspan(value: number): void;
   setRowspan(value: number): void;
-  setScope(value: string): void;
   setHeaders(value: string): void;
+}
+
+export interface SafeTableHeaderCellElement extends SafeTableCellElement {
+  setScope(value: string): void;
 }
 
 export interface SafeDetailsElement extends SafeContainerElement {
@@ -422,7 +425,7 @@ export interface SafeDocument extends TreeOperations {
   createTbody(): SafeContainerElement;
   createTfoot(): SafeContainerElement;
   createTr(): SafeContainerElement;
-  createTh(): SafeTableCellElement;
+  createTh(): SafeTableHeaderCellElement;
   createTd(): SafeTableCellElement;
   createCaption(): SafeContainerElement;
   createColgroup(): SafeContainerElement;

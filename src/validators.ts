@@ -167,13 +167,15 @@ export function validateFactory(name: string, value?: unknown) {
       if (typeof name !== "string" || !hasOwn(FACTORY_TAGS, name)) throw error("INVALID_ARGUMENT", "factory");
   }
 }
-const networkSyntax = /@import(?![a-z0-9_-])|(?:url|(?:-webkit-)?image-set|image|src)\s*\(/i;
-const deferredSyntax = /(?:var|env|attr)\s*\(/i;
+const networkSyntax = /@import(?![a-z0-9_\x80-\uffff-])|(?:^|<!--|[^a-z0-9_\x80-\uffff-])(?:url|(?:-webkit-)?image-set|image|src)[ \t\n\r\f]*\(/i;
+const deferredSyntax = /(?:^|<!--|[^a-z0-9_\x80-\uffff-])(?:var|env|attr)[ \t\n\r\f]*\(/i;
 function unsafeCSS(value: unknown, blockDeferred: boolean): boolean {
   const unsafe = (stream: string) => networkSyntax.test(stream) || (blockDeferred && deferredSyntax.test(stream));
   if (typeof value !== "string") return true;
   if (!/["'\\]|\/\*/.test(value)) return unsafe(value);
   const escape = /\\(?:(\r\n|[\n\r\f])|([\da-f]{1,6})(?:\r\n|[ \t\n\r\f])?|([\s\S])|$)/iy;
+  // Check token boundaries at comments/continuations and the conservative joined spelling.
+  const segments: string[] = [];
   let stream = "",
     quote = "";
   for (let i = 0; i < value.length; i++) {
@@ -182,11 +184,19 @@ function unsafeCSS(value: unknown, blockDeferred: boolean): boolean {
       escape.lastIndex = i;
       const [, continuation, hex, literal] = escape.exec(value)!;
       i = escape.lastIndex - 1;
-      if (quote || continuation) continue;
+      if (quote) continue;
+      if (continuation) {
+        segments.push(stream);
+        stream = "";
+        continue;
+      }
+      let decoded = literal ?? "\ufffd";
       if (hex) {
-        const n = parseInt(hex, 16);
-        stream += String.fromCodePoint(!n || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff) ? 0xfffd : n);
-      } else stream += literal ?? "\ufffd";
+        const code = parseInt(hex, 16);
+        decoded = String.fromCodePoint(!code || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? 0xfffd : code);
+      }
+      // Escaped punctuation belongs to the identifier, even when it spells a delimiter.
+      stream += /[a-z0-9_\x80-\uffff-]/i.test(decoded) ? decoded : "_";
     } else if (quote) {
       if (c === quote || c === "\n" || c === "\r" || c === "\f") quote = "";
     } else if (c === "'" || c === '"') {
@@ -195,10 +205,14 @@ function unsafeCSS(value: unknown, blockDeferred: boolean): boolean {
     } else if (c === "/" && value[i + 1] === "*") {
       const end = value.indexOf("*/", i + 2);
       if (end === -1) return true;
+      segments.push(stream);
+      stream = "";
       i = end + 1;
     } else stream += c;
   }
-  return unsafe(stream);
+  if (!segments.length) return unsafe(stream);
+  segments.push(stream);
+  return unsafe(segments.join(" ")) || unsafe(segments.join(""));
 }
 export function scanCSSNetworkRisk(value: unknown): boolean {
   return unsafeCSS(value, false);

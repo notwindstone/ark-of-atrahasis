@@ -238,8 +238,10 @@ export function createElement(owner: Owner, tag: string): SafeElement {
       break;
     case "th":
     case "td":
-      attributes("colspan rowspan", nonnegative);
-      attributes("scope headers");
+      attributes("colspan", (v) => requireIntegerInRange(v, 1, 1000));
+      attributes("rowspan", (v) => requireIntegerInRange(v, 0, 65534));
+      attributes("headers");
+      if (tag === "th") attributes("scope");
       break;
     case "canvas":
       properties("width height", nonnegative);
