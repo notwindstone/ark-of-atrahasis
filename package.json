@@ -25,6 +25,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prepack": "bun run build",
     "prepublishOnly": "bun run check",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
