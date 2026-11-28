@@ -1,184 +1,111 @@
-import type {
-  SafeDocument,
-  SafeElement,
-  SafeTextNode,
-  SafeStyleSheet,
-  FormattingTag,
-  HeadingLevel,
-  ListType,
-} from "./types.ts";
-import {
-  createSafeElement,
-  createSafeInputElement,
-  createSafeTextareaElement,
-  createSafeSelectElement,
-  createSafeOptionElement,
-  createSafeButtonElement,
-  createSafeLabelElement,
-  createSafeFieldsetElement,
-  createSafeImageElement,
-  createSafeAnchorElement,
-  createSafeVideoElement,
-  createSafeAudioElement,
-  createSafeSourceElement,
-  createSafeCanvasElement,
-  createSafeTableCellElement,
-  createSafeDetailsElement,
-  createSafeDialogElement,
-  createSafeProgressElement,
-  createSafeMeterElement,
-  createSafeListElement,
-  createSafeDescriptionListElement,
-} from "./element.ts";
-import { createSafeTextNode } from "./text.ts";
+import { descendants } from "./platform.ts";
+import { Owner, owners } from "./owner.ts";
+import { createElement } from "./element.ts";
+import { createTextNode, treeOperations } from "./text.ts";
 import { createSafeStyleSheet } from "./stylesheet.ts";
-
-export type {
+import { FACTORY_TAGS, requireString, validateFactory } from "./validators.ts";
+import { error } from "./errors.ts";
+import type {
+  SafeDomain,
   SafeDocument,
+  SafeDomainOptions,
   SafeElement,
-  SafeTextNode,
-  SafeStyleSheet,
-  SafeEvent,
-  SafeStyle,
-  SafeInputElement,
-  SafeTextareaElement,
-  SafeSelectElement,
-  SafeOptionElement,
-  SafeButtonElement,
-  SafeLabelElement,
-  SafeFieldsetElement,
-  SafeImageElement,
-  SafeAnchorElement,
-  SafeVideoElement,
-  SafeAudioElement,
-  SafeSourceElement,
-  SafeCanvasElement,
-  SafeTableCellElement,
-  SafeDetailsElement,
-  SafeDialogElement,
-  SafeProgressElement,
-  SafeMeterElement,
-  SafeListElement,
-  SafeDescriptionListElement,
   ListType,
   FormattingTag,
   HeadingLevel,
-  EventHandler,
-  EventCleanup,
 } from "./types.ts";
+export type * from "./types.ts";
+export type { SafeDOMError, SafeDOMErrorCode } from "./errors.ts";
+export type { SafeURLPolicy, SafeURLDecision, SafeStylePolicy, URLSink, URLSinkPolicy } from "./policies.ts";
+export { createURLPolicy, createStylePolicy } from "./policies.ts";
+export { isSafeDOMError } from "./errors.ts";
 
-const FORMATTING_TAGS = new Set<string>([
-  "strong", "em", "small", "b", "i", "u",
-  "code", "kbd", "samp", "var",
-  "sub", "sup", "mark", "abbr", "cite",
-]);
-
-function simple(tag: string): SafeElement {
-  return createSafeElement(document.createElement(tag));
-}
-
-export function createSafeDocument(pluginRootID: string): SafeDocument {
-  const pluginRoot: HTMLElement | null = document.getElementById(pluginRootID);
-
-  if (!pluginRoot) {
-    throw new Error(`No HTML element with the '${pluginRootID}' id was found`);
-  }
-
-  return {
-    createDiv(): SafeElement { return simple("div"); },
-    createSpan(): SafeElement { return simple("span"); },
-    createSection(): SafeElement { return simple("section"); },
-    createArticle(): SafeElement { return simple("article"); },
-    createNav(): SafeElement { return simple("nav"); },
-    createHeader(): SafeElement { return simple("header"); },
-    createFooter(): SafeElement { return simple("footer"); },
-    createMain(): SafeElement { return simple("main"); },
-    createAside(): SafeElement { return simple("aside"); },
-    createFigure(): SafeElement { return simple("figure"); },
-    createFigcaption(): SafeElement { return simple("figcaption"); },
-
-    createText(): SafeElement { return simple("p"); },
-    createHeading(level: HeadingLevel): SafeElement {
-      if (level < 1 || level > 6) throw new Error("Heading level must be 1-6");
-      return simple(`h${level}`);
+function mount(owner: Owner, root: Element | ShadowRoot, single = false): SafeDocument {
+  const mount = owner.claim(root);
+  const active = mount.check;
+  const create = (tag: string) => {
+    active();
+    return createElement(owner, tag);
+  };
+  const doc = {
+    ...Object.fromEntries(Object.entries(FACTORY_TAGS).map(([name, tag]) => [name, () => create(tag)])),
+    ...treeOperations(owner, active),
+    createHeading(level: HeadingLevel) {
+      active();
+      validateFactory("createHeading", level);
+      return create("h" + level);
     },
-    createFormatting(format: FormattingTag): SafeElement {
-      if (!FORMATTING_TAGS.has(format)) throw new Error(`Unknown formatting tag: ${format}`);
-      return simple(format);
+    createFormatting(tag: FormattingTag) {
+      active();
+      validateFactory("createFormatting", tag);
+      return create(tag);
     },
-
-    createBlockquote(): SafeElement { return simple("blockquote"); },
-    createPre(): SafeElement { return simple("pre"); },
-
     createList(type: ListType) {
-      if (type === "unordered") return createSafeListElement(document.createElement("ul") as HTMLUListElement);
-      if (type === "ordered") return createSafeListElement(document.createElement("ol") as HTMLOListElement);
-      if (type === "description") return createSafeDescriptionListElement(document.createElement("dl") as HTMLDListElement);
-      throw new Error(`Unknown list type: ${type}`);
+      active();
+      validateFactory("createList", type);
+      return create({ ordered: "ol", unordered: "ul", description: "dl" }[type]);
     },
-    createListItem(): SafeElement { return simple("li"); },
-    createTerm(): SafeElement { return simple("dt"); },
-    createDescription(): SafeElement { return simple("dd"); },
-
-    createTable(): SafeElement { return simple("table"); },
-    createThead(): SafeElement { return simple("thead"); },
-    createTbody(): SafeElement { return simple("tbody"); },
-    createTfoot(): SafeElement { return simple("tfoot"); },
-    createTr(): SafeElement { return simple("tr"); },
-    createTh() { return createSafeTableCellElement(document.createElement("th") as HTMLTableCellElement); },
-    createTd() { return createSafeTableCellElement(document.createElement("td") as HTMLTableCellElement); },
-    createCaption(): SafeElement { return simple("caption"); },
-    createColgroup(): SafeElement { return simple("colgroup"); },
-    createCol(): SafeElement { return simple("col"); },
-
-    createButton() { return createSafeButtonElement(document.createElement("button") as HTMLButtonElement); },
-    createInput() { return createSafeInputElement(document.createElement("input") as HTMLInputElement); },
-    createSelect() { return createSafeSelectElement(document.createElement("select") as HTMLSelectElement); },
-    createOption() { return createSafeOptionElement(document.createElement("option") as HTMLOptionElement); },
-    createOptgroup(): SafeElement { return simple("optgroup"); },
-    createTextarea() { return createSafeTextareaElement(document.createElement("textarea") as HTMLTextAreaElement); },
-    createLabel() { return createSafeLabelElement(document.createElement("label") as HTMLLabelElement); },
-    createFieldset() { return createSafeFieldsetElement(document.createElement("fieldset") as HTMLFieldSetElement); },
-    createLegend(): SafeElement { return simple("legend"); },
-
-    createImage() { return createSafeImageElement(document.createElement("img") as HTMLImageElement); },
-    createVideo() { return createSafeVideoElement(document.createElement("video") as HTMLVideoElement); },
-    createAudio() { return createSafeAudioElement(document.createElement("audio") as HTMLAudioElement); },
-    createSource() { return createSafeSourceElement(document.createElement("source") as HTMLSourceElement); },
-    createTrack(): SafeElement { return simple("track"); },
-    createPicture(): SafeElement { return simple("picture"); },
-    createCanvas() { return createSafeCanvasElement(document.createElement("canvas") as HTMLCanvasElement); },
-
-    createAnchor() { return createSafeAnchorElement(document.createElement("a") as HTMLAnchorElement); },
-    createDetails() { return createSafeDetailsElement(document.createElement("details") as HTMLDetailsElement); },
-    createSummary(): SafeElement { return simple("summary"); },
-    createDialog() { return createSafeDialogElement(document.createElement("dialog") as HTMLDialogElement); },
-    createHr(): SafeElement { return simple("hr"); },
-    createBr(): SafeElement { return simple("br"); },
-    createWbr(): SafeElement { return simple("wbr"); },
-    createProgress() { return createSafeProgressElement(document.createElement("progress") as HTMLProgressElement); },
-    createMeter() { return createSafeMeterElement(document.createElement("meter") as HTMLMeterElement); },
-    createOutput(): SafeElement { return simple("output"); },
-    createTime(): SafeElement { return simple("time"); },
-    createData(): SafeElement { return simple("data"); },
-    createRuby(): SafeElement { return simple("ruby"); },
-    createRt(): SafeElement { return simple("rt"); },
-    createRp(): SafeElement { return simple("rp"); },
-
-    createRawText(): SafeTextNode {
-      return createSafeTextNode(document.createTextNode(""));
+    createTextNode(value = "") {
+      active();
+      validateFactory("createTextNode", value);
+      return createTextNode(owner, value);
     },
-
-    createStyle(): SafeStyleSheet {
-      return createSafeStyleSheet(document.createElement("style"));
+    createStyle() {
+      return createSafeStyleSheet(owner, mount);
     },
-
-    getElement(id: string): SafeElement | null {
-      if (pluginRoot.id === id) return createSafeElement(pluginRoot);
-
-      const realEl = pluginRoot.querySelector(`#${CSS.escape(id)}`);
-      if (!realEl || !(realEl instanceof HTMLElement)) return null;
-      return createSafeElement(realEl);
+    getElement(id: string) {
+      const root = active();
+      requireString(id);
+      if (!id) return null;
+      const p = owner.platform;
+      const iface = p.isShadowRoot(root) ? "DocumentFragment" : "Element";
+      const simple = /^[A-Za-z_][A-Za-z0-9_-]*$/.test(id);
+      let el = simple ? p.call(iface, "querySelector", root, "#" + id) : null;
+      if (!simple || (el && p.call("Element", "id", el) !== id)) {
+        el = null;
+        for (const candidate of descendants(p, root)) {
+          if (p.isElement(candidate) && p.call("Element", "id", candidate) === id) {
+            el = candidate;
+            break;
+          }
+        }
+      }
+      const entry = el && owner.byReal.get(el);
+      if (!entry) return null;
+      owner.authorized(entry);
+      return entry.wrapper as SafeElement;
+    },
+    dispose() {
+      if (single) owner.dispose();
+      else mount.dispose();
     },
   };
+  try {
+    const completed = owner.complete(doc);
+    mount.activate();
+    return completed as unknown as SafeDocument;
+  } catch (err) {
+    mount.dispose();
+    throw err;
+  }
+}
+export function createSafeDomain(document: Document, options?: SafeDomainOptions): SafeDomain {
+  const owner = new Owner(document, options);
+  const domain = {
+    mount: (root: Element | ShadowRoot) => mount(owner, root),
+    dispose: () => owner.dispose(),
+  };
+  try {
+    owner.complete(domain);
+  } catch (err) {
+    owner.dispose();
+    throw err;
+  }
+  owners.set(domain, owner);
+  return domain;
+}
+export function createSafeDocument(root: Element | ShadowRoot, options?: SafeDomainOptions): SafeDocument {
+  if (typeof root !== "object" || root === null || !root.ownerDocument)
+    throw error("INVALID_ROOT", "createSafeDocument");
+  return mount(new Owner(root.ownerDocument, options), root, true);
 }
